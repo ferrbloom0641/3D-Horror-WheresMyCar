@@ -4,8 +4,8 @@ using UnityEngine;
 [RequireComponent(typeof(Collider))]
 public sealed class WarningPointTrigger : MonoBehaviour
 {
-    private const string FindCarMessage = "I need to find my car...";
-    private const string WrongWayMessage = "This is the wrong way...";
+    private const string EscapeVehicleMessage = "I need a car to get out of here...";
+    private const string WrongWayMessage = "I can't get out this way...";
 
     private bool hasTriggered;
 
@@ -26,7 +26,7 @@ public sealed class WarningPointTrigger : MonoBehaviour
         CarInteractionController interaction = FindFirstObjectByType<CarInteractionController>();
         if (interaction == null) return;
 
-        string message = name.EndsWith("_03") ? WrongWayMessage : FindCarMessage;
+        string message = name.EndsWith("_03") ? WrongWayMessage : EscapeVehicleMessage;
         interaction.ShowGuidanceSubtitle(message);
         hasTriggered = true;
     }

@@ -73,3 +73,14 @@ crashlytics-build.properties
 # Temporary auto-generated Android Assets
 /[Aa]ssets/[Ss]treamingAssets/aa.meta
 /[Aa]ssets/[Ss]treamingAssets/aa/*
+
+# Local backups, promotional exports and one-off editor automation
+/Backups/
+/CodexBackups/
+/Exports/
+/Assets/_Recovery/
+*.slnx
+/Assets/Editor/ParkingCoverCapture.cs
+/Assets/Editor/ParkingCoverCapture.cs.meta
+/Assets/Editor/ParkingWindowsBuild.cs
+/Assets/Editor/ParkingWindowsBuild.cs.meta

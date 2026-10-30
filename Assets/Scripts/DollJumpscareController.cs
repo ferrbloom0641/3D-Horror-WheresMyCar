@@ -12,7 +12,7 @@ public sealed class DollJumpscareController : MonoBehaviour
     [SerializeField, Min(0f)] private float shakeRotation = 8.5f;
 
     [Header("Jumpscare red uplight")]
-    [SerializeField, Min(0f)] private float uplightIntensity = 1.6f;
+    [SerializeField, Min(0f)] private float uplightIntensity = 1.76f;
     [SerializeField, Min(0.1f)] private float uplightRange = 2.2f;
     [SerializeField, Range(1f, 179f)] private float uplightAngle = 58f;
 
@@ -24,6 +24,8 @@ public sealed class DollJumpscareController : MonoBehaviour
     private GameObject jumpscareDoll;
     private Animator jumpscareAnimator;
     private Renderer jumpscareEyes;
+    private Renderer jumpscareFace;
+    private Transform jumpscareHead;
     private Transform jumpscareNeck;
     private Transform leftUpperArm;
     private Transform leftLowerArm;
@@ -41,7 +43,6 @@ public sealed class DollJumpscareController : MonoBehaviour
     private Material pupilMaterial;
     private Material glassMaterial;
     private Light jumpscareUplight;
-    private DollEyeGlowController jumpscareEyeGlow;
     private float attackTimer;
 
     public bool IsAttacking { get; private set; }
@@ -159,6 +160,7 @@ public sealed class DollJumpscareController : MonoBehaviour
         }
 
         UpdateHeadRattle();
+        UpdateFaceLightPose();
     }
 
     private void OnDestroy()
@@ -213,13 +215,13 @@ public sealed class DollJumpscareController : MonoBehaviour
         }
 
         jumpscareAnimator.enabled = false;
+        // Close-up eyes use only their pupil material, never the distant LED quads.
+        foreach (DollEyeGlowController glow in jumpscareDoll.GetComponentsInChildren<DollEyeGlowController>(true))
+        {
+            glow.SetGlowVisible(false);
+            glow.enabled = false;
+        }
         ConfigureJumpscareEyes();
-        jumpscareEyeGlow = jumpscareDoll.GetComponent<DollEyeGlowController>();
-        if (jumpscareEyeGlow == null)
-            jumpscareEyeGlow = jumpscareDoll.AddComponent<DollEyeGlowController>();
-        jumpscareEyeGlow.enabled = true;
-        jumpscareEyeGlow.InitializeNow();
-        jumpscareEyeGlow.SetGlowVisible(true);
         CreateOrUpdateUplight();
     }
 
@@ -230,26 +232,6 @@ public sealed class DollJumpscareController : MonoBehaviour
             return;
         }
 
-        Bounds dollBounds = new Bounds(jumpscareDoll.transform.position, Vector3.zero);
-        bool hasBounds = false;
-        foreach (Renderer dollRenderer in jumpscareDoll.GetComponentsInChildren<Renderer>(true))
-        {
-            if (!dollRenderer.enabled) continue;
-            if (!hasBounds)
-            {
-                dollBounds = dollRenderer.bounds;
-                hasBounds = true;
-            }
-            else
-            {
-                dollBounds.Encapsulate(dollRenderer.bounds);
-            }
-        }
-
-        Vector3 target = hasBounds ? dollBounds.center : jumpscareDoll.transform.position;
-        float verticalOffset = hasBounds ? Mathf.Clamp(dollBounds.extents.y * 0.85f, 0.35f, 0.75f) : 0.5f;
-        Vector3 lightPosition = target - playerCamera.transform.up * verticalOffset;
-
         if (jumpscareUplight == null)
         {
             GameObject lightObject = new GameObject("Jumpscare Red Uplight");
@@ -257,8 +239,6 @@ public sealed class DollJumpscareController : MonoBehaviour
             jumpscareUplight = lightObject.AddComponent<Light>();
         }
 
-        jumpscareUplight.transform.position = lightPosition;
-        jumpscareUplight.transform.rotation = Quaternion.LookRotation(target - lightPosition);
         jumpscareUplight.type = LightType.Spot;
         jumpscareUplight.color = new Color(1f, 0.035f, 0.015f, 1f);
         jumpscareUplight.intensity = uplightIntensity;
@@ -266,11 +246,41 @@ public sealed class DollJumpscareController : MonoBehaviour
         jumpscareUplight.spotAngle = uplightAngle;
         jumpscareUplight.innerSpotAngle = uplightAngle * 0.55f;
         jumpscareUplight.shadows = LightShadows.None;
+        jumpscareUplight.renderMode = LightRenderMode.ForcePixel;
+        UpdateFaceLightPose();
         jumpscareUplight.enabled = true;
+    }
+
+    private void UpdateFaceLightPose()
+    {
+        if (jumpscareUplight == null || playerCamera == null || jumpscareDoll == null) return;
+        Bounds bounds = new Bounds(jumpscareDoll.transform.position, Vector3.zero);
+        bool hasBounds = false;
+        // Use the original model renderers, excluding generated eye-glow quads.
+        foreach (Renderer renderer in jumpscareAnimator.GetComponentsInChildren<SkinnedMeshRenderer>())
+        {
+            if (!renderer.enabled) continue;
+            if (!hasBounds) { bounds = renderer.bounds; hasBounds = true; }
+            else bounds.Encapsulate(renderer.bounds);
+        }
+        Vector3 target = hasBounds ? bounds.center : jumpscareDoll.transform.position;
+        float verticalOffset = hasBounds ? Mathf.Clamp(bounds.extents.y * 0.85f, 0.35f, 0.75f) : 0.5f;
+        Vector3 position = target - playerCamera.transform.up * verticalOffset;
+        // Preserve the low placement; move only toward the viewer by 30 cm.
+        Vector3 towardPlayer = Vector3.ProjectOnPlane(
+            playerCamera.transform.position - target, playerCamera.transform.up);
+        if (towardPlayer.sqrMagnitude < 0.0001f)
+            towardPlayer = -playerCamera.transform.forward;
+        position += towardPlayer.normalized * 0.3f;
+        if (jumpscareNeck != null)
+            target = jumpscareNeck.position - playerCamera.transform.up * 0.08f;
+        jumpscareUplight.transform.SetPositionAndRotation(
+            position, Quaternion.LookRotation(target - position, playerCamera.transform.up));
     }
 
     private void CacheJumpscareBones()
     {
+        jumpscareHead = jumpscareAnimator.GetBoneTransform(HumanBodyBones.Head);
         jumpscareNeck = jumpscareAnimator.GetBoneTransform(HumanBodyBones.Neck);
         if (jumpscareNeck == null) jumpscareNeck = jumpscareAnimator.GetBoneTransform(HumanBodyBones.Head);
         leftUpperArm = jumpscareAnimator.GetBoneTransform(HumanBodyBones.LeftUpperArm);
@@ -286,6 +296,8 @@ public sealed class DollJumpscareController : MonoBehaviour
     {
         foreach (Renderer candidate in jumpscareDoll.GetComponentsInChildren<Renderer>(true))
         {
+            if (candidate.name.IndexOf("Head", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                jumpscareFace = candidate;
             if (candidate.name.IndexOf("Eyes", System.StringComparison.OrdinalIgnoreCase) >= 0)
             {
                 jumpscareEyes = candidate;
@@ -372,7 +384,8 @@ public sealed class DollJumpscareController : MonoBehaviour
         attackTimer += Time.unscaledDeltaTime;
         if (attackTimer < gameOverDelay) return;
         IsAttackComplete = true;
-        if (jumpscareUplight != null) jumpscareUplight.enabled = false;
+        // The doll remains visible behind GAME OVER. Keep its dedicated light
+        // until ResetForRestart/OnDestroy, independent of the dark garage lighting.
         enabled = false;
         bool controllerAvailable = GameOverController.Instance != null;
         if (controllerAvailable) GameOverController.Instance.ShowGameOver();

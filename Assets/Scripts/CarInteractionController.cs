@@ -74,7 +74,7 @@ public sealed class CarInteractionController : MonoBehaviour
     {
         ResolveReferences();
         if (progressController != null) lastAnnouncedFloor = progressController.CurrentFloorId;
-        ShowResultSubtitle("I need to find my car...", 5f);
+        ShowResultSubtitle("I need to get out of this garage...", 5f);
     }
 
     public void ShowGuidanceSubtitle(string message)

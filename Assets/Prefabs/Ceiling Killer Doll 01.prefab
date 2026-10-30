@@ -4517,10 +4517,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 329b632bdb0ed5c49843c07d4077344d, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::DollEyeGlowController
-  glowIntensity: 5
+  glowIntensity: 1
   haloScale: 1.8
-  minimumScreenPixels: 3
-  maximumHaloWorldSize: 0.065
+  minimumScreenPixels: 4
+  maximumHaloWorldSize: 0.12
 --- !u!195 &4347354145428318183
 NavMeshAgent:
   m_ObjectHideFlags: 0

@@ -43,15 +43,15 @@ public sealed class LobbyScreenController : MonoBehaviour
     private Vector2 lobbyTitleBasePosition;
     private Color lobbyTitleBaseColor;
     private GameObject lobbyDoll;
-    private Transform lobbyDollHead;
-    private float lobbyDollLookWeight;
+    private GameObject lobbyWindowDoll;
+    private readonly List<Mesh> windowDollMeshes = new List<Mesh>();
+    private readonly Dictionary<Material, Material> windowDollDarkMaterials = new Dictionary<Material, Material>();
     private Vector3 lobbyCameraBasePosition;
     private Quaternion lobbyCameraBaseRotation;
     private readonly List<Transform> dollPoints = new List<Transform>();
     private int targetPointIndex = 1;
     private int dollPathDirection = 1;
     private bool lobbyActive;
-    private bool dollPausing;
     private readonly List<Renderer> hiddenPhoneRenderers = new List<Renderer>();
 
 #if UNITY_WEBGL && !UNITY_EDITOR
@@ -117,6 +117,8 @@ public sealed class LobbyScreenController : MonoBehaviour
 #endif
         Time.timeScale = 1f;
         if (noiseTexture != null) Destroy(noiseTexture);
+        foreach (Mesh mesh in windowDollMeshes) if (mesh != null) Destroy(mesh);
+        foreach (Material material in windowDollDarkMaterials.Values) if (material != null) Destroy(material);
         if (lobbyMusicSource != null) lobbyMusicSource.Stop();
         if (Instance == this) Instance = null;
     }
@@ -134,7 +136,7 @@ public sealed class LobbyScreenController : MonoBehaviour
             return;
         }
 
-        if (!lobbyActive || lobbyDoll == null || dollPoints.Count < 2 || dollPausing) return;
+        if (!lobbyActive || lobbyDoll == null || dollPoints.Count < 2) return;
 
         Transform destination = dollPoints[targetPointIndex];
         Vector3 travelDirection = destination.position - lobbyDoll.transform.position;
@@ -152,8 +154,7 @@ public sealed class LobbyScreenController : MonoBehaviour
         }
 
         if ((lobbyDoll.transform.position - destination.position).sqrMagnitude > 0.015f) return;
-        if (destination.name == "LobbyDollPoint_03") StartCoroutine(PauseAndWatchCamera());
-        else AdvanceDollPoint();
+        AdvanceDollPoint();
     }
 
     private void LateUpdate()
@@ -163,11 +164,6 @@ public sealed class LobbyScreenController : MonoBehaviour
             if (smartphone != null) smartphone.SetLobbyHidden(true);
             ForceHidePhoneRenderers();
         }
-        if (!lobbyActive || lobbyDollHead == null || lobbyCamera == null || lobbyDollLookWeight <= 0f) return;
-        Vector3 direction = lobbyCamera.transform.position - lobbyDollHead.position;
-        if (direction.sqrMagnitude <= 0.0001f) return;
-        Quaternion lookRotation = Quaternion.LookRotation(direction.normalized, Vector3.up);
-        lobbyDollHead.rotation = Quaternion.Slerp(lobbyDollHead.rotation, lookRotation, lobbyDollLookWeight);
     }
 
     private void EnterLobby()
@@ -192,6 +188,7 @@ public sealed class LobbyScreenController : MonoBehaviour
         if (outputCamera != null) outputCamera.cullingMask = gameplayCameraCullingMask & ~(1 << 8);
 
         CreateLobbyDoll();
+        CreateWindowDoll();
         if (lobbyMusicSource != null && lobbyMusic != null)
         {
             lobbyMusicSource.volume = lobbyMusicVolume;
@@ -254,6 +251,7 @@ public sealed class LobbyScreenController : MonoBehaviour
             lobbyCanvas.blocksRaycasts = false;
         }
         if (lobbyDoll != null) lobbyDoll.SetActive(false);
+        if (lobbyWindowDoll != null) lobbyWindowDoll.SetActive(false);
 
         if (lobbyCamera != null)
         {
@@ -367,7 +365,7 @@ public sealed class LobbyScreenController : MonoBehaviour
     private void CreateLobbyDoll()
     {
         dollPoints.Clear();
-        for (int i = 1; i <= 5; i++)
+        for (int i = 2; i <= 4; i++)
         {
             GameObject point = GameObject.Find($"LobbyDollPoint_{i:00}");
             if (point != null) dollPoints.Add(point.transform);
@@ -402,42 +400,125 @@ public sealed class LobbyScreenController : MonoBehaviour
             // Lobby movement is driven explicitly by MoveTowards; root motion would compete with it.
             animator.applyRootMotion = false;
             animator.updateMode = AnimatorUpdateMode.UnscaledTime;
-            if (lobbyDollHead == null && animator.isHuman)
-                lobbyDollHead = animator.GetBoneTransform(HumanBodyBones.Head);
         }
-        if (lobbyDollHead == null)
-            lobbyDollHead = lobbyDoll.GetComponentsInChildren<Transform>(true)
-                .FirstOrDefault(candidate => candidate.name.ToLowerInvariant() == "head");
         targetPointIndex = dollPoints.Count > 1 ? 1 : 0;
         dollPathDirection = 1;
     }
 
-    private IEnumerator PauseAndWatchCamera()
+
+    private void CreateWindowDoll()
     {
-        dollPausing = true;
-        yield return WaitUnscaled(0.45f);
-        if (lobbyDollHead != null && lobbyCamera != null)
+        if (lobbyWindowDoll != null || lobbyCamera == null) return;
+        GameObject window = GameObject.Find("Window_A_prefab (4)");
+        GameObject visual = Resources.Load<GameObject>("LobbyWindowDollVisual");
+        if (window == null || visual == null)
         {
-            float elapsed = 0f;
-            while (elapsed < 0.75f)
+            Debug.LogWarning("[Lobby] Window doll anchor or visual is missing.");
+            return;
+        }
+
+        lobbyWindowDoll = Instantiate(visual, transform);
+        lobbyWindowDoll.name = "Lobby Window Doll";
+        foreach (Animator animator in lobbyWindowDoll.GetComponentsInChildren<Animator>(true))
+        {
+            animator.enabled = false;
+            if (!animator.isHuman) continue;
+            foreach (HumanBodyBones armBone in new[] { HumanBodyBones.LeftUpperArm, HumanBodyBones.RightUpperArm })
             {
-                elapsed += Time.unscaledDeltaTime;
-                lobbyDollLookWeight = Mathf.SmoothStep(0f, 0.85f, elapsed / 0.75f);
-                yield return null;
+                Transform arm = animator.GetBoneTransform(armBone);
+                Transform elbow = animator.GetBoneTransform(armBone == HumanBodyBones.LeftUpperArm
+                    ? HumanBodyBones.LeftLowerArm : HumanBodyBones.RightLowerArm);
+                if (arm != null && elbow != null)
+                    arm.rotation = Quaternion.FromToRotation(elbow.position - arm.position, Vector3.down) * arm.rotation;
             }
         }
-        yield return WaitUnscaled(1.35f);
-        float releaseElapsed = 0f;
-        float releaseStartWeight = lobbyDollLookWeight;
-        while (releaseElapsed < 0.55f)
+
+        // Fifth window above the entrance. Keep the face inside the opening.
+        Vector3 facePosition = window.transform.position + new Vector3(0.12f, 1.25f, 0f);
+        Vector3 towardViewer = lobbyCamera.transform.position - facePosition;
+        lobbyWindowDoll.transform.rotation = Quaternion.LookRotation(
+            new Vector3(towardViewer.x, 0f, towardViewer.z), Vector3.up);
+        Transform head = lobbyWindowDoll.GetComponentsInChildren<Transform>(true)
+            .FirstOrDefault(t => t.name.Equals("head", System.StringComparison.OrdinalIgnoreCase));
+        if (head != null)
         {
-            releaseElapsed += Time.unscaledDeltaTime;
-            lobbyDollLookWeight = Mathf.Lerp(releaseStartWeight, 0f, releaseElapsed / 0.55f);
-            yield return null;
+            head.rotation = Quaternion.LookRotation(towardViewer, Vector3.up);
+            // The decorative source uses one combined eye mesh. Reuse the existing
+            // doll's pupil meshes and exact head-local placements for the indicators.
+            if (lobbyDoll != null)
+            {
+                foreach (Renderer source in lobbyDoll.GetComponentsInChildren<Renderer>(true))
+                {
+                    if (source.name != "LeftPupil" && source.name != "RightPupil") continue;
+                    GameObject pupil = Instantiate(source.gameObject, head, false);
+                    pupil.name = source.name;
+                    pupil.transform.localPosition = source.transform.localPosition;
+                    pupil.transform.localRotation = source.transform.localRotation;
+                    pupil.transform.localScale = source.transform.localScale;
+                }
+            }
         }
-        lobbyDollLookWeight = 0f;
-        AdvanceDollPoint();
-        dollPausing = false;
+
+        // Freeze the decorative model once: no Animator, AI, or skinning during the lobby.
+        foreach (SkinnedMeshRenderer skin in lobbyWindowDoll.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+        {
+            Mesh mesh = new Mesh { name = "Lobby Window Doll Static Mesh" };
+            skin.BakeMesh(mesh);
+            windowDollMeshes.Add(mesh);
+            GameObject part = new GameObject(skin.name);
+            part.transform.SetParent(skin.transform, false);
+            part.AddComponent<MeshFilter>().sharedMesh = mesh;
+            MeshRenderer renderer = part.AddComponent<MeshRenderer>();
+            Material[] bodyMaterials = skin.sharedMaterials;
+            for (int i = 0; i < bodyMaterials.Length; i++)
+                bodyMaterials[i] = GetWindowDollDarkMaterial(bodyMaterials[i]);
+            renderer.sharedMaterials = bodyMaterials;
+            renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            renderer.receiveShadows = true;
+            skin.enabled = false;
+            // The eye controller must find the frozen renderer, not the disabled skin.
+            skin.gameObject.name += " (Rig)";
+        }
+        Renderer[] renderers = lobbyWindowDoll.GetComponentsInChildren<Renderer>(true);
+        Renderer left = renderers.FirstOrDefault(r => r.enabled && r.name == "LeftPupil");
+        Renderer right = renderers.FirstOrDefault(r => r.enabled && r.name == "RightPupil");
+        if (left != null && right != null)
+        {
+            lobbyWindowDoll.transform.position += facePosition - (left.bounds.center + right.bounds.center) * 0.5f;
+            lobbyWindowDoll.AddComponent<DollEyeGlowController>().InitializeNow();
+        }
+        else if (head != null)
+        {
+            Renderer eyes = renderers.FirstOrDefault(r => r.enabled && r.name == "Unity_KillerDoll_Eyes");
+            lobbyWindowDoll.transform.position += facePosition - (eyes != null ? eyes.bounds.center : head.position);
+        }
+    }
+
+    private Material GetWindowDollDarkMaterial(Material source)
+    {
+        if (source == null) return null;
+        if (windowDollDarkMaterials.TryGetValue(source, out Material cached)) return cached;
+        Material material = new Material(source)
+        {
+            name = source.name + " (Window Silhouette)",
+            hideFlags = HideFlags.DontSave
+        };
+        foreach (string property in new[] { "_BaseColor", "_Color" })
+        {
+            if (!material.HasProperty(property)) continue;
+            Color color = material.GetColor(property);
+            material.SetColor(property, new Color(color.r * 0.045f, color.g * 0.045f, color.b * 0.045f, color.a));
+        }
+        if (material.HasProperty("_Metallic")) material.SetFloat("_Metallic", 0f);
+        if (material.HasProperty("_Smoothness")) material.SetFloat("_Smoothness", 0.05f);
+        if (material.HasProperty("_SpecularHighlights")) material.SetFloat("_SpecularHighlights", 0f);
+        if (material.HasProperty("_EnvironmentReflections")) material.SetFloat("_EnvironmentReflections", 0f);
+        if (material.HasProperty("_EmissionColor")) material.SetColor("_EmissionColor", Color.black);
+        material.DisableKeyword("_EMISSION");
+        material.EnableKeyword("_SPECULARHIGHLIGHTS_OFF");
+        material.EnableKeyword("_ENVIRONMENTREFLECTIONS_OFF");
+        windowDollDarkMaterials.Add(source, material);
+        return material;
     }
 
     private void AdvanceDollPoint()
@@ -629,7 +710,8 @@ public sealed class LobbyScreenController : MonoBehaviour
         Text title = new GameObject("FindMyCarTitle", typeof(RectTransform), typeof(Text)).GetComponent<Text>();
         title.transform.SetParent(canvasObject.transform, false);
         title.font = font;
-        title.text = "WHERE'S MY CAR?";
+        title.supportRichText = true;
+        title.text = "ESCAPE\n<size=50>THE PARKING GARAGE</size>";
         title.fontSize = 112;
         title.fontStyle = FontStyle.Bold;
         title.alignment = TextAnchor.MiddleLeft;
@@ -638,11 +720,12 @@ public sealed class LobbyScreenController : MonoBehaviour
         RectTransform titleRect = title.rectTransform;
         titleRect.anchorMin = titleRect.anchorMax = new Vector2(0.045f, 0.78f);
         titleRect.pivot = new Vector2(0f, 0.5f);
-        titleRect.sizeDelta = new Vector2(1250f, 170f);
+        titleRect.sizeDelta = new Vector2(1250f, 280f);
         titleRect.anchoredPosition = Vector2.zero;
         lobbyTitle = title;
         lobbyTitleBasePosition = titleRect.anchoredPosition;
         lobbyTitleBaseColor = title.color;
+        title.gameObject.AddComponent<LobbyEscapeTitleOffset>();
         Outline titleOutline = title.gameObject.AddComponent<Outline>();
         titleOutline.effectColor = new Color(0f, 0.008f, 0.015f, 0.96f);
         titleOutline.effectDistance = new Vector2(4f, -4f);
@@ -664,7 +747,7 @@ public sealed class LobbyScreenController : MonoBehaviour
         Text label = new GameObject("Label", typeof(RectTransform), typeof(Text)).GetComponent<Text>();
         label.transform.SetParent(promptObject.transform, false);
         label.font = font;
-        label.text = "PRESS SPACE TO FIND YOUR CAR";
+        label.text = "PRESS SPACE TO START";
         label.fontSize = 30;
         label.fontStyle = FontStyle.Bold;
         label.alignment = TextAnchor.MiddleCenter;
@@ -740,5 +823,22 @@ public sealed class LobbyScreenController : MonoBehaviour
     {
         if (EventSystem.current != null) return;
         new GameObject("EventSystem", typeof(EventSystem), typeof(InputSystemUIInputModule));
+    }
+}
+
+// Move only the six ESCAPE glyphs; preserve the subtitle layout and title effects.
+public sealed class LobbyEscapeTitleOffset : BaseMeshEffect
+{
+    public override void ModifyMesh(VertexHelper vertices)
+    {
+        if (!IsActive()) return;
+        int escapeVertexCount = Mathf.Min(6 * 4, vertices.currentVertCount);
+        UIVertex vertex = default;
+        for (int i = 0; i < escapeVertexCount; i++)
+        {
+            vertices.PopulateUIVertex(ref vertex, i);
+            vertex.position.y -= 32f;
+            vertices.SetUIVertex(vertex, i);
+        }
     }
 }

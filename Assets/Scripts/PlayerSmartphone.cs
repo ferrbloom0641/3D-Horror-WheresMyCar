@@ -32,15 +32,15 @@ public sealed class PlayerSmartphone : MonoBehaviour
     [Range(0f, 45f)] public float rearCameraVerticalLimit = 15f;
     [Min(0.1f)] public float rearCameraStabilization = 8f;
     [Min(1f)] public float rearCameraFarClip = 30f;
-    [Min(64)] public int rearTextureWidth = 128;
-    [Min(64)] public int rearTextureHeight = 228;
+    [Min(64)] public int rearTextureWidth = 512;
+    [Min(64)] public int rearTextureHeight = 912;
 
     [Header("Screen Image")]
     [Tooltip("휴대폰에 중계되는 카메라 영상만 어둡게 조절합니다. 주변 보조광 강도와는 별개입니다.")]
     [Range(0.1f, 2f)] public float screenBrightness = 0.8f;
 
     [Header("Flash")]
-    [Min(0f)] public float flashIntensity = 120f;
+    [Min(0f)] public float flashIntensity = 15f;
     [Min(0f)] public float flashRange = 10f;
     [Range(1f, 179f)] public float flashAngle = 46f;
 
@@ -48,7 +48,7 @@ public sealed class PlayerSmartphone : MonoBehaviour
     public bool useProximityDimming = false;
     [Min(0.05f)] public float proximityNearDistance = 0.5f;
     [Min(0.1f)] public float proximityFullIntensityDistance = 2.2f;
-    [Min(0f)] public float proximityNearIntensity = 28f;
+    [Min(0f)] public float proximityNearIntensity = 3.5f;
     [Min(0.1f)] public float proximityDimmingSmoothness = 12f;
 
     private readonly List<Material> runtimeMaterials = new List<Material>();
@@ -62,6 +62,7 @@ public sealed class PlayerSmartphone : MonoBehaviour
     private RenderTexture rearViewTexture;
     private Material phoneScreenMaterial;
     private Light phoneFlashLight;
+    private Light phoneScreenGlow;
     private bool lobbyHidden;
     private bool phoneBuilt;
 
@@ -92,6 +93,7 @@ public sealed class PlayerSmartphone : MonoBehaviour
         if (!visible)
         {
             if (phoneFlashLight != null) phoneFlashLight.enabled = false;
+            if (phoneScreenGlow != null) phoneScreenGlow.enabled = false;
         }
     }
 
@@ -398,7 +400,7 @@ public sealed class PlayerSmartphone : MonoBehaviour
         {
             name = "Smartphone Rear View",
             antiAliasing = 1,
-            filterMode = FilterMode.Point,
+            filterMode = FilterMode.Bilinear,
             useMipMap = false,
             autoGenerateMips = false,
             hideFlags = HideFlags.DontSave
@@ -472,6 +474,19 @@ public sealed class PlayerSmartphone : MonoBehaviour
         phoneFlashLight.innerSpotAngle = flashAngle * 0.58f;
         phoneFlashLight.cullingMask = ~(1 << ViewModelLayer);
         phoneFlashLight.shadows = LightShadows.None;
+
+        // A small screen-side fill affects only the phone, not the garage.
+        GameObject glowObject = new GameObject("Smartphone Screen Soft Glow");
+        glowObject.layer = ViewModelLayer;
+        glowObject.transform.SetParent(phoneRig, false);
+        glowObject.transform.localPosition = new Vector3(0f, 0.04f, -0.05f);
+        phoneScreenGlow = glowObject.AddComponent<Light>();
+        phoneScreenGlow.type = LightType.Point;
+        phoneScreenGlow.color = new Color(0.7f, 0.82f, 1f);
+        phoneScreenGlow.intensity = 0.08f;
+        phoneScreenGlow.range = 0.3f;
+        phoneScreenGlow.cullingMask = 1 << ViewModelLayer;
+        phoneScreenGlow.shadows = LightShadows.None;
     }
 
     private void UpdateLightState()
@@ -487,6 +502,7 @@ public sealed class PlayerSmartphone : MonoBehaviour
             && (GameOverController.Instance == null || !GameOverController.Instance.IsGameOver);
 
         if (phoneFlashLight != null) phoneFlashLight.enabled = lightsEnabled;
+        if (phoneScreenGlow != null) phoneScreenGlow.enabled = lightsEnabled;
     }
 
     private void UpdateFlashProximityDimming()
@@ -503,23 +519,45 @@ public sealed class PlayerSmartphone : MonoBehaviour
             float fullDistance = Mathf.Max(nearDistance + 0.05f, proximityFullIntensityDistance);
             int environmentMask = ~(1 << ViewModelLayer);
 
-            if (Physics.Raycast(
-                    phoneFlashLight.transform.position,
-                    phoneFlashLight.transform.forward,
-                    out RaycastHit hit,
-                    fullDistance,
-                    environmentMask,
-                    QueryTriggerInteraction.Ignore))
+            Transform lightTransform = phoneFlashLight.transform;
+            float spread = Mathf.Tan(phoneFlashLight.spotAngle * 0.3f * Mathf.Deg2Rad);
+            float nearestDistance = fullDistance;
+            bool foundSurface = false;
+            // Five allocation-free probes cover the center and the inner beam edges.
+            for (int i = 0; i < 5; i++)
             {
-                float distanceBlend = Mathf.InverseLerp(nearDistance, fullDistance, hit.distance);
-                targetIntensity = Mathf.Lerp(
-                    Mathf.Min(proximityNearIntensity, flashIntensity),
-                    flashIntensity,
-                    distanceBlend);
+                Vector3 direction = lightTransform.forward;
+                if (i == 1) direction += lightTransform.right * spread;
+                else if (i == 2) direction -= lightTransform.right * spread;
+                else if (i == 3) direction += lightTransform.up * spread;
+                else if (i == 4) direction -= lightTransform.up * spread;
+                if (Physics.Raycast(lightTransform.position, direction.normalized,
+                    out RaycastHit hit, fullDistance, environmentMask, QueryTriggerInteraction.Ignore))
+                {
+                    foundSurface = true;
+                    nearestDistance = Mathf.Min(nearestDistance, hit.distance);
+                }
+            }
+            if (foundSurface)
+            {
+                float nearIntensity = Mathf.Min(proximityNearIntensity, flashIntensity);
+                if (nearestDistance < nearDistance)
+                {
+                    // Continue dimming inside the previous 0.5 m / intensity 28 floor.
+                    float ratio = Mathf.Clamp01(nearestDistance / nearDistance);
+                    targetIntensity = Mathf.Lerp(Mathf.Min(0.25f, nearIntensity), nearIntensity, ratio * ratio);
+                }
+                else
+                {
+                    float distanceBlend = Mathf.InverseLerp(nearDistance, fullDistance, nearestDistance);
+                    targetIntensity = Mathf.Lerp(nearIntensity, flashIntensity, distanceBlend);
+                }
             }
         }
 
-        float blend = 1f - Mathf.Exp(-proximityDimmingSmoothness * Time.unscaledDeltaTime);
+        // Dim promptly on approach; recover gradually to avoid a sudden bright flash.
+        float response = targetIntensity < phoneFlashLight.intensity ? 3f : 1f;
+        float blend = 1f - Mathf.Exp(-proximityDimmingSmoothness * response * Time.unscaledDeltaTime);
         phoneFlashLight.intensity = Mathf.Lerp(phoneFlashLight.intensity, targetIntensity, blend);
     }
 
@@ -531,16 +569,48 @@ public sealed class PlayerSmartphone : MonoBehaviour
         }
 
         bool flashWasEnabled = phoneFlashLight != null && phoneFlashLight.enabled;
+        bool glowWasEnabled = phoneScreenGlow != null && phoneScreenGlow.enabled;
         try
         {
             if (phoneFlashLight != null) phoneFlashLight.enabled = false;
+            if (phoneScreenGlow != null) phoneScreenGlow.enabled = false;
             rearCamera.targetTexture = rearViewTexture;
+            DollEyeGlowController.PrepareForCamera(rearCamera, true, GetPhoneEyeMinimumPixels());
             rearCamera.Render();
         }
         finally
         {
+            DollEyeGlowController.PrepareForCamera(playerCamera, false);
             if (phoneFlashLight != null) phoneFlashLight.enabled = flashWasEnabled;
+            if (phoneScreenGlow != null) phoneScreenGlow.enabled = glowWasEnabled;
         }
+    }
+
+    private float GetPhoneEyeMinimumPixels()
+    {
+        if (playerCamera == null || rearViewTexture == null) return 12f;
+        float minY = float.PositiveInfinity;
+        float maxY = float.NegativeInfinity;
+        foreach (Renderer renderer in phoneRenderers)
+        {
+            if (renderer == null || !renderer.enabled) continue;
+            Bounds bounds = renderer.bounds;
+            for (int corner = 0; corner < 8; corner++)
+            {
+                Vector3 point = bounds.center + Vector3.Scale(bounds.extents, new Vector3(
+                    (corner & 1) == 0 ? -1f : 1f,
+                    (corner & 2) == 0 ? -1f : 1f,
+                    (corner & 4) == 0 ? -1f : 1f));
+                Vector3 pixel = playerCamera.WorldToScreenPoint(point);
+                if (pixel.z <= 0f) continue;
+                minY = Mathf.Min(minY, pixel.y);
+                maxY = Mathf.Max(maxY, pixel.y);
+            }
+        }
+        if (float.IsInfinity(minY)) return 12f;
+        // Target a small three-pixel dot in the visible phone display.
+        float displayHeight = Mathf.Max(64f, (maxY - minY) * 0.8f);
+        return Mathf.Clamp(3f * rearViewTexture.height / displayHeight, 3f, 24f);
     }
 
     private void RestoreScreenOutput()
@@ -584,7 +654,14 @@ public sealed class PlayerSmartphone : MonoBehaviour
             screen.SetTextureOffset("_BaseMap", new Vector2(0f, 1f));
         }
 
-        if (screen.HasProperty("_BaseColor")) screen.SetColor("_BaseColor", screenColor);
+        // Display the camera image through emission only. The nearby screen
+        // fill must not add diffuse lighting or a specular hotspot to the image.
+        if (screen.HasProperty("_BaseColor")) screen.SetColor("_BaseColor", Color.black);
+        foreach (string property in new[] { "_Metallic", "_Smoothness", "_SpecularHighlights", "_EnvironmentReflections" })
+            if (screen.HasProperty(property)) screen.SetFloat(property, 0f);
+        screen.DisableKeyword("_METALLICSPECGLOSSMAP");
+        screen.EnableKeyword("_SPECULARHIGHLIGHTS_OFF");
+        screen.EnableKeyword("_ENVIRONMENTREFLECTIONS_OFF");
         if (screen.HasProperty("_EmissionMap")) screen.SetTexture("_EmissionMap", rearViewTexture);
         if (screen.HasProperty("_EmissionColor"))
         {

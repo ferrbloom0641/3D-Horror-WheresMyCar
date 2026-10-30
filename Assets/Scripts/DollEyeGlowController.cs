@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -10,10 +11,35 @@ using UnityEngine.Rendering;
 public sealed class DollEyeGlowController : MonoBehaviour
 {
     [Header("Pupil-only red glow")]
-    [SerializeField, Min(0f)] private float glowIntensity = 5f;
+    [SerializeField, Min(0f)] private float glowIntensity = 1f;
     [SerializeField, Min(1f)] private float haloScale = 1.8f;
-    [SerializeField, Min(1f)] private float minimumScreenPixels = 3f;
-    [SerializeField, Min(0.001f)] private float maximumHaloWorldSize = 0.065f;
+    [SerializeField, Min(1f)] private float minimumScreenPixels = 4f;
+    [SerializeField, Min(0.001f)] private float maximumHaloWorldSize = 0.12f;
+    [Header("Phone rear-view eye visibility")]
+    [SerializeField, Min(1f)] private float phoneMinimumScreenPixels = 12f;
+    [SerializeField, Min(0.001f)] private float phoneMaximumHaloWorldSize = 0.18f;
+
+    private static readonly HashSet<DollEyeGlowController> activeGlows = new HashSet<DollEyeGlowController>();
+
+    private void OnEnable() => activeGlows.Add(this);
+    private void OnDisable() => activeGlows.Remove(this);
+
+    // Called around the phone's synchronous camera render; no extra lights are needed.
+    public static void PrepareForCamera(Camera camera, bool phoneView, float phoneDisplayMinimumPixels = 0f)
+    {
+        if (camera == null) return;
+        foreach (DollEyeGlowController glow in activeGlows)
+        {
+            if (glow == null || !glow.initialized || !glow.glowVisible) continue;
+            float pixels = phoneView ? glow.phoneMinimumScreenPixels : glow.minimumScreenPixels;
+            if (phoneView && phoneDisplayMinimumPixels > 0f) pixels = phoneDisplayMinimumPixels;
+            if (glow.haloMaterial != null)
+                glow.haloMaterial.SetFloat("_PhoneView", phoneView ? 1f : 0f);
+            float sizeLimit = phoneView ? glow.phoneMaximumHaloWorldSize : glow.maximumHaloWorldSize;
+            glow.UpdateHalo(glow.leftHalo, glow.leftPupilRenderer, camera, pixels, sizeLimit, phoneView);
+            glow.UpdateHalo(glow.rightHalo, glow.rightPupilRenderer, camera, pixels, sizeLimit, phoneView);
+        }
+    }
 
     private Renderer leftPupilRenderer;
     private Renderer rightPupilRenderer;
@@ -76,8 +102,8 @@ public sealed class DollEyeGlowController : MonoBehaviour
             viewingCamera = Camera.main;
         }
 
-        UpdateHalo(leftHalo, leftPupilRenderer);
-        UpdateHalo(rightHalo, rightPupilRenderer);
+        UpdateHalo(leftHalo, leftPupilRenderer, viewingCamera, minimumScreenPixels, maximumHaloWorldSize);
+        UpdateHalo(rightHalo, rightPupilRenderer, viewingCamera, minimumScreenPixels, maximumHaloWorldSize);
     }
 
     public void SetGlowVisible(bool visible)
@@ -208,19 +234,29 @@ public sealed class DollEyeGlowController : MonoBehaviour
                 Vector2 uv = new Vector2(
                     (x + 0.5f) / haloTexture.width * 2f - 1f,
                     (y + 0.5f) / haloTexture.height * 2f - 1f);
-                float alpha = Mathf.Pow(Mathf.Clamp01(1f - uv.magnitude), 2.2f);
-                haloTexture.SetPixel(x, y, new Color(1f, 0.015f, 0.005f, alpha));
+                // A solid indicator core remains legible without Bloom.
+                float radius = uv.magnitude;
+                float core = 1f - Mathf.SmoothStep(0.45f, 0.65f, radius);
+                float edge = 0.12f * (1f - Mathf.SmoothStep(0.65f, 1f, radius));
+                float alpha = Mathf.Max(core, edge);
+                haloTexture.SetPixel(x, y, new Color(1f, 1f, 1f, alpha));
             }
         }
         haloTexture.Apply(false, true);
 
-        haloMaterial = new Material(glowMaterial)
+        Shader indicatorShader = Resources.Load<Shader>("DollEyeIndicator");
+        if (indicatorShader == null)
+        {
+            Debug.LogError("DollEyeGlowController: DollEyeIndicator shader is missing.", this);
+            return;
+        }
+        haloMaterial = new Material(indicatorShader)
         {
             name = "Doll Eye Halo (Runtime)",
             hideFlags = HideFlags.DontSave,
             renderQueue = 3000
         };
-        Color haloColor = new Color(1f, 0f, 0f, 0.9f);
+        Color haloColor = new Color(1f, 0f, 0f, 1f);
         haloMaterial.mainTexture = haloTexture;
         haloMaterial.color = haloColor;
         if (haloMaterial.HasProperty("_BaseMap")) haloMaterial.SetTexture("_BaseMap", haloTexture);
@@ -255,27 +291,50 @@ public sealed class DollEyeGlowController : MonoBehaviour
         return haloObject.transform;
     }
 
-    private void UpdateHalo(Transform halo, Renderer pupil)
+    private void UpdateHalo(Transform halo, Renderer pupil, Camera camera, float minimumPixels, float sizeLimit, bool phoneView = false)
     {
-        if (halo == null || pupil == null || viewingCamera == null)
+        if (halo == null || pupil == null || camera == null)
         {
             return;
         }
 
         Vector3 pupilCenter = pupil.bounds.center;
-        Vector3 towardCamera = (viewingCamera.transform.position - pupilCenter).normalized;
-        float distance = Vector3.Distance(viewingCamera.transform.position, pupilCenter);
+        Vector3 towardCamera = (camera.transform.position - pupilCenter).normalized;
+        float distance = Mathf.Max(camera.nearClipPlane,
+            Vector3.Dot(pupilCenter - camera.transform.position, camera.transform.forward));
         float pixelWorldSize = 2f * distance
-            * Mathf.Tan(viewingCamera.fieldOfView * 0.5f * Mathf.Deg2Rad)
-            / Mathf.Max(1, viewingCamera.pixelHeight);
+            * Mathf.Tan(camera.fieldOfView * 0.5f * Mathf.Deg2Rad)
+            / Mathf.Max(1, camera.targetTexture != null ? camera.targetTexture.height : camera.pixelHeight);
         float pupilSize = Mathf.Max(pupil.bounds.size.x, pupil.bounds.size.y);
-        float haloSize = Mathf.Min(
-            maximumHaloWorldSize,
-            Mathf.Max(pupilSize * haloScale, pixelWorldSize * minimumScreenPixels));
+        // Limit the physical halo, but never let that cap erase the small screen-space dot.
+        float haloSize = Mathf.Max(
+            Mathf.Min(sizeLimit, pupilSize * haloScale),
+            pixelWorldSize * minimumPixels);
+        if (phoneView)
+        {
+            // Two small dots, never a face-sized glow. Physical pupil size must
+            // not enlarge the phone indicator, and eye spacing is a hard cap.
+            haloSize = Mathf.Min(sizeLimit, pixelWorldSize * minimumPixels);
+            if (leftPupilRenderer != null && rightPupilRenderer != null)
+            {
+                Vector3 separation = rightPupilRenderer.bounds.center - leftPupilRenderer.bounds.center;
+                float projectedSpacing = Vector3.ProjectOnPlane(separation, camera.transform.forward).magnitude;
+                haloSize = Mathf.Min(haloSize, projectedSpacing * 0.35f);
+            }
+        }
 
-        halo.position = pupilCenter + towardCamera * 0.002f;
-        halo.rotation = Quaternion.LookRotation(-towardCamera, viewingCamera.transform.up);
-        halo.localScale = Vector3.one * haloSize;
+        // Place the indicator just outside the pupil instead of inside its mesh.
+        Vector3 extents = pupil.bounds.extents;
+        float surfaceOffset = Mathf.Abs(towardCamera.x) * extents.x
+            + Mathf.Abs(towardCamera.y) * extents.y
+            + Mathf.Abs(towardCamera.z) * extents.z;
+        halo.position = pupilCenter + towardCamera * (surfaceOffset + 0.001f);
+        halo.rotation = Quaternion.LookRotation(-towardCamera, camera.transform.up);
+        Vector3 parentScale = halo.parent != null ? halo.parent.lossyScale : Vector3.one;
+        halo.localScale = new Vector3(
+            haloSize / Mathf.Max(0.0001f, Mathf.Abs(parentScale.x)),
+            haloSize / Mathf.Max(0.0001f, Mathf.Abs(parentScale.y)),
+            haloSize / Mathf.Max(0.0001f, Mathf.Abs(parentScale.z)));
     }
 
     private static void RestoreMaterial(Renderer pupilRenderer, Material originalMaterial)

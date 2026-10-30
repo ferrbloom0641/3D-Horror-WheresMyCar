@@ -47,6 +47,8 @@ public sealed class EscapeVehicleSequenceController : MonoBehaviour
     private CeilingDollController[] pausedDolls;
     private bool subscribed;
     private bool isPlaying;
+    private GameObject escapeFillRig;
+    private Light[] escapeFillLights;
 
     private void Awake()
     {
@@ -73,6 +75,7 @@ public sealed class EscapeVehicleSequenceController : MonoBehaviour
     private void OnDisable()
     {
         Unsubscribe();
+        ClearEscapeFill();
     }
 
     private void HandleCarSucceeded(CarKeyGimmick succeededCar)
@@ -99,17 +102,20 @@ public sealed class EscapeVehicleSequenceController : MonoBehaviour
         PlayEngineStart();
         StartCoroutine(ShakeVehicleForEngineStart());
         SetHeadlights(true);
+        CreateEscapeFill();
 
         float elapsed = 0f;
         while (elapsed < dollyDuration)
         {
             elapsed += Time.unscaledDeltaTime;
             float t = Mathf.Clamp01(elapsed / dollyDuration);
+            SetEscapeFillStrength(Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(elapsed / 0.6f)));
             splineDolly.CameraPosition = Mathf.SmoothStep(0f, 1f, t);
             yield return null;
         }
 
         splineDolly.CameraPosition = 1f;
+        SetEscapeFillStrength(1f);
         yield return WaitUnscaled(finalCameraHold);
 
         yield return FadeEscapeText(0f, 1f, 0.22f);
@@ -120,10 +126,62 @@ public sealed class EscapeVehicleSequenceController : MonoBehaviour
         yield return MoveVehicleToEndPoint();
         yield return WaitUnscaled(endHold);
         yield return FadeToBlack();
+        ClearEscapeFill();
 
         Cursor.lockState = CursorLockMode.None;
         Cursor.visible = true;
         LobbyScreenController.ReturnToLobbyAfterEscape();
+    }
+
+    private void ClearEscapeFill()
+    {
+        if (escapeFillRig != null)
+        {
+            escapeFillRig.SetActive(false);
+            Destroy(escapeFillRig);
+        }
+        escapeFillRig = null;
+        escapeFillLights = null;
+    }
+
+    private void SetEscapeFillStrength(float weight)
+    {
+        if (escapeFillLights == null) return;
+        foreach (Light fill in escapeFillLights)
+            if (fill != null) fill.intensity = 1.5f * weight;
+    }
+
+    private void CreateEscapeFill()
+    {
+        ClearEscapeFill();
+        if (vehicleRoot == null) return;
+        Bounds bounds = new Bounds(vehicleRoot.position, Vector3.zero);
+        bool found = false;
+        foreach (Renderer renderer in vehicleRoot.GetComponentsInChildren<Renderer>())
+        {
+            if (!renderer.enabled || renderer is ParticleSystemRenderer) continue;
+            if (!found) { bounds = renderer.bounds; found = true; }
+            else bounds.Encapsulate(renderer.bounds);
+        }
+        escapeFillRig = new GameObject("Escape Vehicle Soft Fill");
+        escapeFillRig.transform.SetPositionAndRotation(bounds.center, vehicleRoot.rotation);
+        escapeFillRig.transform.SetParent(vehicleRoot, true);
+        escapeFillLights = new Light[2];
+        for (int i = 0; i < escapeFillLights.Length; i++)
+        {
+            GameObject source = new GameObject("Soft Fill " + (i + 1));
+            source.transform.position = bounds.center + Vector3.up * 2.2f
+                + vehicleRoot.right * (i == 0 ? -2.2f : 2.2f);
+            source.transform.SetParent(escapeFillRig.transform, true);
+            Light fill = source.AddComponent<Light>();
+            fill.type = LightType.Point;
+            fill.color = new Color(0.82f, 0.87f, 1f);
+            fill.intensity = 0f;
+            fill.range = 5.5f;
+            fill.shadows = LightShadows.None;
+            fill.cullingMask = ~(1 << 8);
+            escapeFillLights[i] = fill;
+        }
     }
 
     private void LockGameplay()
